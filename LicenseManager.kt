@@ -14,7 +14,7 @@ import kotlin.concurrent.thread
 class LicenseManager(private val context: Context) {
 
     companion object {
-        const val LICENSE_JSON_URL = "https://raw.githubusercontent.com/meisamsamenii-hub/iTellBridge-v40/main/licenses.json"
+        const val LICENSE_JSON_URL = "https://raw.githubusercontent.com/meisamsamenii-hub/iTellBridge-40/main/licenses.json"
         private const val SECRET_SALT = "ITB_PRO_SAMENI_2026_SECRET_KEY_9941"
     }
 
