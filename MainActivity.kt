@@ -1602,7 +1602,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun formatPhoneLtr(raw: String): String {
         val resolved = contactsManager.resolveName(raw)
-        val isRawNumber = resolved == raw || resolved.matches(Regex("^[+0-9\s\-()]+$"))
+        val isRawNumber = resolved == raw || resolved.matches(Regex("^[+0-9\\s\\-()]+$"))
         return if (isRawNumber) "\u200E$resolved\u200E" else resolved
     }
 
