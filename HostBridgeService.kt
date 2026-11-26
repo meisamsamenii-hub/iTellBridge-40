@@ -7,6 +7,8 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.database.ContentObserver
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
 import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.BatteryManager
@@ -16,6 +18,8 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
+import android.os.SystemClock
+import android.view.KeyEvent
 import android.provider.CallLog
 import android.provider.ContactsContract
 import android.provider.Telephony
@@ -256,7 +260,7 @@ class HostBridgeService : Service() {
         )
 
         startStatusMonitorLoop()
-        onHostLog?.invoke("میزبان v4.2 روی ${getLocalIpAddress()}:8888 و پروکسی 8080 فعال شد.")
+        onHostLog?.invoke("میزبان v4.3 روی ${getLocalIpAddress()}:8888 و پروکسی 8080 فعال شد.")
         return START_STICKY
     }
 
@@ -601,30 +605,92 @@ class HostBridgeService : Service() {
 
     @SuppressLint("MissingPermission")
     private fun answerCallCompat() {
+        var answered = false
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                val tm = getSystemService(Context.TELECOM_SERVICE) as TelecomManager
-                tm.acceptRingingCall()
-            } else {
-                sendFeedback("پاسخ خودکار نیازمند اندروید ۸ به بالا است.")
+                if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.ANSWER_PHONE_CALLS) != PackageManager.PERMISSION_GRANTED) {
+                    sendFeedback("مجوز پاسخ به تماس (Phone) روی گوشی اول فعال نیست! از تنظیمات گوشی اول مجوز Phone را Allow کنید.")
+                } else {
+                    val tm = getSystemService(Context.TELECOM_SERVICE) as TelecomManager
+                    tm.acceptRingingCall()
+                    answered = true
+                }
             }
-        } catch (e: Exception) {
-            sendFeedback("خطا در پاسخ تماس: ${e.message}")
+        } catch (_: Exception) {
+        }
+
+        if (!answered) {
+            try {
+                val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                val now = SystemClock.uptimeMillis()
+                am.dispatchMediaKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_HEADSETHOOK, 0))
+                am.dispatchMediaKeyEvent(KeyEvent(now, now + 50, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_HEADSETHOOK, 0))
+                answered = true
+            } catch (e: Exception) {
+                sendFeedback("خطا در پاسخ تماس: ${e.message}")
+            }
+        }
+
+        if (answered) {
+            onHostLog?.invoke("تماس پاسخ داده شد (هدایت صدا به هندزفری بلوتوثی)")
+            Handler(Looper.getMainLooper()).postDelayed({ routeCallToBluetoothHeadset() }, 600)
+        }
+    }
+
+    private fun routeCallToBluetoothHeadset() {
+        try {
+            val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            am.isSpeakerphoneOn = false
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val btDevice = am.availableCommunicationDevices.firstOrNull {
+                    it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO || it.type == AudioDeviceInfo.TYPE_BLE_HEADSET
+                }
+                if (btDevice != null) {
+                    am.setCommunicationDevice(btDevice)
+                }
+            } else {
+                @Suppress("DEPRECATION")
+                if (am.isBluetoothScoAvailableOffCall) {
+                    am.startBluetoothSco()
+                    am.isBluetoothScoOn = true
+                }
+            }
+        } catch (_: Exception) {
         }
     }
 
     @SuppressLint("MissingPermission")
     private fun endCallCompat() {
+        var ended = false
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                val tm = getSystemService(Context.TELECOM_SERVICE) as TelecomManager
-                @Suppress("DEPRECATION")
-                tm.endCall()
-            } else {
-                sendFeedback("قطع خودکار تماس نیازمند اندروید ۹ به بالا است.")
+                if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.ANSWER_PHONE_CALLS) != PackageManager.PERMISSION_GRANTED) {
+                    sendFeedback("مجوز قطع تماس (Phone) روی گوشی اول فعال نیست!")
+                } else {
+                    val tm = getSystemService(Context.TELECOM_SERVICE) as TelecomManager
+                    @Suppress("DEPRECATION")
+                    ended = tm.endCall()
+                }
             }
-        } catch (e: Exception) {
-            sendFeedback("خطا در قطع تماس: ${e.message}")
+        } catch (_: Exception) {
+        }
+
+        if (!ended) {
+            try {
+                val tm = getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+                val m = Class.forName(tm.javaClass.name).getDeclaredMethod("getITelephony")
+                m.isAccessible = true
+                val telephonyInterface = m.invoke(tm)
+                val endMethod = Class.forName(telephonyInterface.javaClass.name).getDeclaredMethod("endCall")
+                endMethod.invoke(telephonyInterface)
+                ended = true
+            } catch (e: Exception) {
+                sendFeedback("خطا در قطع تماس: ${e.message}")
+            }
+        }
+
+        if (ended) {
+            onHostLog?.invoke("تماس از گوشی دوم قطع شد.")
         }
     }
 
@@ -658,7 +724,7 @@ class HostBridgeService : Service() {
             Notification.Builder(this)
         }
         val notification = builder
-            .setContentTitle("Samen Pro v4.2 (میزبان فعال)")
+            .setContentTitle("Samen Pro v4.3 (میزبان فعال)")
             .setContentText("IP: ${getLocalIpAddress()} | پورت 8888 | پروکسی 8080")
             .setSmallIcon(android.R.drawable.stat_sys_phone_call)
             .build()

@@ -328,6 +328,10 @@ class ClientBridgeService : Service() {
             "NEW_SMS" -> {
                 val sender = json.optString("sender")
                 val body = json.optString("body")
+                val norm = cm.normalizePhone(sender).ifBlank { sender }
+                val unreadPrefs = getSharedPreferences("itell_unread_v4", Context.MODE_PRIVATE)
+                val prev = unreadPrefs.getInt(norm, 0)
+                unreadPrefs.edit().putInt(norm, prev + 1).apply()
                 val name = cm.resolveName(sender)
                 val otp = OtpCopyReceiver.extractOtp(body)
                 showSimpleAlert(201, "پیامک از $name", body, "sms_channel", otp)

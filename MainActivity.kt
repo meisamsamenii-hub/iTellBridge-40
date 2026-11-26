@@ -208,6 +208,7 @@ class MainActivity : AppCompatActivity() {
         }
         setContentView(rootFrame)
         switchTab(0)
+        updateSmsNavBadge()
 
         bluetoothHeadsetMode = getSharedPreferences("itell_cfg", Context.MODE_PRIVATE).getBoolean("bt_headset_mode", true)
         HostBridgeService.onHostLog = { msg -> appendLog(msg) }
@@ -268,6 +269,8 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         bindClientServiceCallbacks()
+        updateSmsNavBadge()
+        refreshSmsThreadsUI()
         isConnected = ClientBridgeService.isConnected
         connectedHostIp = ClientBridgeService.connectedHostIp
         if (isConnected) {
@@ -328,7 +331,7 @@ class MainActivity : AppCompatActivity() {
             setTypeface(null, Typeface.BOLD)
         })
         titleCol.addView(TextView(this).apply {
-            text = "نسخه ۴.۲ • دو سیم‌کارت + سوئیچ هوشمند + پنل گزارشات"
+            text = "نسخه ۴.۳ • تماس تمام‌صفحه + هندزفری خودکار + پیامک نخوانده"
             textSize = 11f
             setTextColor(colSubText)
         })
@@ -592,6 +595,24 @@ class MainActivity : AppCompatActivity() {
             ).apply { setMargins(0, dp(8), 0, 0) }
         }
         btCard.addView(dozeBtn)
+        val overlayBtn = styledButton("📱 فعال‌سازی نمایش تمام‌صفحه تماس (روی سایر برنامه‌ها)", colPurple) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                try {
+                    val intent = Intent(
+                        android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        android.net.Uri.parse("package:$packageName")
+                    )
+                    startActivity(intent)
+                } catch (_: Exception) {
+                    Toast.makeText(this, "از تنظیمات گوشی مجوز Display over other apps را فعال کنید", Toast.LENGTH_LONG).show()
+                }
+            }
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(0, dp(8), 0, 0) }
+        }
+        btCard.addView(overlayBtn)
         col.addView(btCard)
 
         // کارت کشف خودکار (Zero-Config)
@@ -1289,6 +1310,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun openChatThread(address: String) {
         openChatAddress = address
+        clearUnreadCount(address)
         chatHeaderTitle.text = formatPhoneLtr(address)
         chatHeaderTitle.textDirection = View.TEXT_DIRECTION_LTR
         smsThreadsView.visibility = View.GONE
@@ -1330,18 +1352,39 @@ class MainActivity : AppCompatActivity() {
 
             val fmt = SimpleDateFormat("MM/dd HH:mm", Locale.getDefault())
             for ((latest, _, isPinned) in sortedThreads) {
-                val card = cardContainer()
-                val headerRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                val unreadCnt = getUnreadCount(latest.address)
+                val card = cardContainer().apply {
+                    if (unreadCnt > 0) {
+                        background = roundedBg(colCardLight, 16)
+                    }
+                }
+                val headerRow = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                }
                 val pinPrefix = if (isPinned) "📌 " else ""
                 headerRow.addView(TextView(this).apply {
                     text = "$pinPrefix${formatPhoneLtr(latest.address)}"
                     textDirection = View.TEXT_DIRECTION_LTR
                     gravity = Gravity.RIGHT
                     textSize = 14f
-                    setTextColor(if (isPinned) colAmber else colAccent)
+                    setTextColor(if (unreadCnt > 0) colGreen else if (isPinned) colAmber else colAccent)
                     setTypeface(null, Typeface.BOLD)
                     layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
                 })
+                if (unreadCnt > 0) {
+                    headerRow.addView(TextView(this).apply {
+                        text = "● $unreadCnt جدید"
+                        textSize = 10.5f
+                        setTextColor(Color.WHITE)
+                        setTypeface(null, Typeface.BOLD)
+                        background = roundedBg(colGreen, 12)
+                        setPadding(dp(8), dp(3), dp(8), dp(3))
+                        layoutParams = LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                        ).apply { setMargins(dp(6), 0, dp(6), 0) }
+                    })
+                }
                 headerRow.addView(TextView(this).apply {
                     text = fmt.format(Date(latest.timestamp))
                     textSize = 11f
@@ -1606,6 +1649,35 @@ class MainActivity : AppCompatActivity() {
         return if (isRawNumber) "\u200E$resolved\u200E" else resolved
     }
 
+    private fun getUnreadCount(address: String): Int {
+        val norm = contactsManager.normalizePhone(address).ifBlank { address }
+        return getSharedPreferences("itell_unread_v4", Context.MODE_PRIVATE).getInt(norm, 0)
+    }
+
+    private fun clearUnreadCount(address: String) {
+        val norm = contactsManager.normalizePhone(address).ifBlank { address }
+        getSharedPreferences("itell_unread_v4", Context.MODE_PRIVATE).edit().remove(norm).apply()
+        updateSmsNavBadge()
+    }
+
+    private fun getTotalUnreadSmsCount(): Int {
+        val all = getSharedPreferences("itell_unread_v4", Context.MODE_PRIVATE).all
+        var total = 0
+        for (v in all.values) {
+            if (v is Int && v > 0) total += v
+        }
+        return total
+    }
+
+    private fun updateSmsNavBadge() {
+        runOnUiThread {
+            if (navButtons.size > 2) {
+                val total = getTotalUnreadSmsCount()
+                navButtons[2].text = if (total > 0) "پیامک ($total)" else "پیامک"
+            }
+        }
+    }
+
     // ==================== ناوبری پایین ====================
     private fun buildBottomNav(): View {
         val nav = LinearLayout(this).apply {
@@ -1753,6 +1825,13 @@ class MainActivity : AppCompatActivity() {
                 val body = json.optString("body")
                 val ts = json.optLong("timestamp", System.currentTimeMillis())
                 allSms.add(0, SmsItem(sender, body, ts, false))
+                val normSender = contactsManager.normalizePhone(sender).ifBlank { sender }
+                val openNorm = openChatAddress?.let { contactsManager.normalizePhone(it).ifBlank { it } }
+                if (activeTab == 2 && openNorm == normSender && smsChatView.visibility == View.VISIBLE) {
+                    clearUnreadCount(sender)
+                } else {
+                    updateSmsNavBadge()
+                }
                 refreshSmsThreadsUI()
                 refreshOpenChatUI()
                 val name = contactsManager.resolveName(sender)
