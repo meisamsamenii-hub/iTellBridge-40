@@ -331,7 +331,7 @@ class MainActivity : AppCompatActivity() {
             setTypeface(null, Typeface.BOLD)
         })
         titleCol.addView(TextView(this).apply {
-            text = "نسخه ۴.۴ • لینک کلیک‌پذیر + کپی خودکار رمز پویا"
+            text = "نسخه ۴.۶ • صدای زنگ واقعی + حذف تکی/دسته‌ای + شمارنده دقیق"
             textSize = 11f
             setTextColor(colSubText)
         })
@@ -456,6 +456,7 @@ class MainActivity : AppCompatActivity() {
                 setMargins(dp(16), 0, dp(16), 0)
             }
             setOnClickListener {
+                ClientBridgeService.stopRingtone()
                 sendEncryptedToHost(JSONObject().put("type", "CMD_ANSWER_CALL").toString())
                 if (!bluetoothHeadsetMode) {
                     sendEncryptedToHost(JSONObject().put("type", "CMD_START_AUDIO").toString())
@@ -477,6 +478,7 @@ class MainActivity : AppCompatActivity() {
                 setMargins(dp(16), 0, dp(16), 0)
             }
             setOnClickListener {
+                ClientBridgeService.stopRingtone()
                 sendEncryptedToHost(JSONObject().put("type", "CMD_END_CALL").toString())
                 sendEncryptedToHost(JSONObject().put("type", "CMD_STOP_AUDIO").toString())
                 hideInCallScreen()
@@ -613,6 +615,18 @@ class MainActivity : AppCompatActivity() {
             ).apply { setMargins(0, dp(8), 0, 0) }
         }
         btCard.addView(overlayBtn)
+        val notifAccessBtn = styledButton("🔔 فعال‌سازی پاسخ و قطع تماس (مخصوص اندروید ۵ تا ۸)", colAccent) {
+            try {
+                startActivity(Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+            } catch (_: Exception) {
+                Toast.makeText(this, "از تنظیمات گوشی بخش Notification access را برای Samen Pro روشن کنید", Toast.LENGTH_LONG).show()
+            }
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(0, dp(8), 0, 0) }
+        }
+        btCard.addView(notifAccessBtn)
         col.addView(btCard)
 
         // کارت کشف خودکار (Zero-Config)
@@ -953,24 +967,35 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.HORIZONTAL
             setPadding(0, 0, 0, dp(8))
         }
-        topBar.addView(styledButton("صفحه‌کلید / کد USSD", colAccent) {
-            dialpadPanel.visibility = if (dialpadPanel.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+        lateinit var dialToggleBtn: TextView
+        dialToggleBtn = styledButton("⌨️ شماره‌گیر", colAccent) {
+            val show = dialpadPanel.visibility != View.VISIBLE
+            dialpadPanel.visibility = if (show) View.VISIBLE else View.GONE
+            dialToggleBtn.text = if (show) "✕ بستن شماره‌گیر" else "⌨️ شماره‌گیر"
         }.apply {
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                setMargins(dp(4), 0, 0, 0)
+                setMargins(dp(3), 0, dp(3), 0)
             }
-        })
-        topBar.addView(styledButton("بروزرسانی تماس‌ها", colCardLight) {
+        }
+        topBar.addView(dialToggleBtn)
+        topBar.addView(styledButton("↻ بروزرسانی", colCardLight) {
             sendEncryptedToHost(JSONObject().put("type", "CMD_SYNC_CALLLOG").toString())
         }.apply {
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.8f).apply {
-                setMargins(0, 0, dp(4), 0)
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.7f).apply {
+                setMargins(dp(3), 0, dp(3), 0)
+            }
+        })
+        topBar.addView(styledButton("🗑 حذف دسته‌ای", colRed) {
+            showBulkDeleteCallsDialog()
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.85f).apply {
+                setMargins(dp(3), 0, dp(3), 0)
             }
         })
         root.addView(topBar)
 
-        // پنل صفحه‌کلید شماره‌گیر (قابل باز و بسته شدن)
-        dialpadPanel = cardContainer().apply { visibility = View.VISIBLE }
+        // پنل صفحه‌کلید شماره‌گیر (پیش‌فرض بسته برای نمایش واضح تماس‌ها)
+        dialpadPanel = cardContainer().apply { visibility = View.GONE }
         dialDisplay = styledInput("شماره یا کد دستوری (مثل *140*11#)").apply {
             textSize = 20f
             gravity = Gravity.CENTER
@@ -1140,6 +1165,7 @@ class MainActivity : AppCompatActivity() {
                 })
                 row.addView(info)
                 row.addView(smallChip("تماس", colGreen) { makeRemoteCall(item.number) })
+                row.addView(smallChip("🗑", colRed) { deleteSingleCallLog(item) })
                 card.addView(row)
                 callLogContainer.addView(card)
             }
@@ -1172,6 +1198,9 @@ class MainActivity : AppCompatActivity() {
         topBar.addView(smallChip("+ جدید", colGreen) { showNewSmsDialog() })
         topBar.addView(smallChip("↻", colAccent) {
             sendEncryptedToHost(JSONObject().put("type", "CMD_SYNC_SMS").toString())
+        })
+        topBar.addView(smallChip("🗑", colRed) {
+            showBulkDeleteSmsDialog()
         })
         smsThreadsView.addView(topBar)
 
@@ -1389,6 +1418,9 @@ class MainActivity : AppCompatActivity() {
                     text = fmt.format(Date(latest.timestamp))
                     textSize = 11f
                     setTextColor(colSubText)
+                })
+                headerRow.addView(smallChip("🗑", colRed) {
+                    deleteSingleSmsThread(latest.address)
                 })
                 card.addView(headerRow)
                 card.addView(TextView(this).apply {
@@ -1683,6 +1715,7 @@ class MainActivity : AppCompatActivity() {
         val norm = contactsManager.normalizePhone(address).ifBlank { address }
         getSharedPreferences("itell_unread_v4", Context.MODE_PRIVATE).edit().remove(norm).apply()
         updateSmsNavBadge()
+        ClientBridgeService.updateAppIconBadge(this)
     }
 
     private fun getTotalUnreadSmsCount(): Int {
@@ -1697,10 +1730,163 @@ class MainActivity : AppCompatActivity() {
     private fun updateSmsNavBadge() {
         runOnUiThread {
             if (navButtons.size > 2) {
-                val total = getTotalUnreadSmsCount()
-                navButtons[2].text = if (total > 0) "پیامک ($total)" else "پیامک"
+                val totalSms = getTotalUnreadSmsCount()
+                navButtons[2].text = if (totalSms > 0) "پیامک ($totalSms)" else "پیامک"
+            }
+            if (navButtons.size > 1) {
+                val missed = ClientBridgeService.getMissedCallsCount(this)
+                navButtons[1].text = if (missed > 0) "تماس ($missed)" else "تماس"
             }
         }
+    }
+
+    private fun deleteSingleCallLog(item: CallLogItem) {
+        AlertDialog.Builder(this)
+            .setTitle("حذف تماس")
+            .setMessage("این تماس از لیست حذف شود؟")
+            .setPositiveButton("حذف") { _, _ ->
+                callLogs.removeAll { it.number == item.number && it.date == item.date }
+                val prefs = getSharedPreferences("itell_deleted_v4", Context.MODE_PRIVATE)
+                val set = (prefs.getStringSet("deleted_call_keys", emptySet()) ?: emptySet()).toMutableSet()
+                set.add("${item.number}|${item.date}")
+                prefs.edit().putStringSet("deleted_call_keys", set).apply()
+                val arr = org.json.JSONArray().put(JSONObject().put("number", item.number).put("date", item.date))
+                sendEncryptedToHost(JSONObject().put("type", "CMD_DELETE_CALLLOG").put("items", arr).toString())
+                refreshCallLogUI()
+            }
+            .setNegativeButton("لغو", null)
+            .show()
+    }
+
+    private fun showBulkDeleteCallsDialog() {
+        if (callLogs.isEmpty()) {
+            Toast.makeText(this, "لیست تماس‌ها خالی است", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val labels = callLogs.map {
+            val n = it.name.ifBlank { contactsManager.resolveName(it.number) }
+            "$n (${it.number})"
+        }.toTypedArray()
+        val checked = BooleanArray(labels.size)
+        AlertDialog.Builder(this)
+            .setTitle("حذف دسته‌ای تماس‌ها")
+            .setMultiChoiceItems(labels, checked) { _, which, isChecked ->
+                checked[which] = isChecked
+            }
+            .setPositiveButton("حذف انتخاب‌شده‌ها") { _, _ ->
+                val toRemove = mutableListOf<CallLogItem>()
+                val arr = org.json.JSONArray()
+                val prefs = getSharedPreferences("itell_deleted_v4", Context.MODE_PRIVATE)
+                val set = (prefs.getStringSet("deleted_call_keys", emptySet()) ?: emptySet()).toMutableSet()
+                for (i in checked.indices) {
+                    if (checked[i]) {
+                        val item = callLogs[i]
+                        toRemove.add(item)
+                        set.add("${item.number}|${item.date}")
+                        arr.put(JSONObject().put("number", item.number).put("date", item.date))
+                    }
+                }
+                if (toRemove.isNotEmpty()) {
+                    callLogs.removeAll(toRemove.toSet())
+                    prefs.edit().putStringSet("deleted_call_keys", set).apply()
+                    sendEncryptedToHost(JSONObject().put("type", "CMD_DELETE_CALLLOG").put("items", arr).toString())
+                    refreshCallLogUI()
+                    Toast.makeText(this, "${toRemove.size} تماس حذف شد", Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setNeutralButton("حذف همه") { _, _ ->
+                val prefs = getSharedPreferences("itell_deleted_v4", Context.MODE_PRIVATE)
+                val set = (prefs.getStringSet("deleted_call_keys", emptySet()) ?: emptySet()).toMutableSet()
+                callLogs.forEach { set.add("${it.number}|${it.date}") }
+                prefs.edit().putStringSet("deleted_call_keys", set).apply()
+                callLogs.clear()
+                sendEncryptedToHost(JSONObject().put("type", "CMD_DELETE_CALLLOG").put("all", true).toString())
+                refreshCallLogUI()
+                Toast.makeText(this, "تمام تماس‌ها حذف شدند", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("لغو", null)
+            .show()
+    }
+
+    private fun deleteSingleSmsThread(address: String) {
+        val norm = contactsManager.normalizePhone(address).ifBlank { address }
+        AlertDialog.Builder(this)
+            .setTitle("حذف مکالمه پیامکی")
+            .setMessage("تمام پیامک‌های این مخاطب حذف شوند؟")
+            .setPositiveButton("حذف") { _, _ ->
+                val prefs = getSharedPreferences("itell_deleted_v4", Context.MODE_PRIVATE)
+                val set = (prefs.getStringSet("deleted_sms_keys", emptySet()) ?: emptySet()).toMutableSet()
+                val matching = allSms.filter { contactsManager.normalizePhone(it.address).ifBlank { it.address } == norm }
+                matching.forEach { set.add("$norm|${it.timestamp}") }
+                prefs.edit().putStringSet("deleted_sms_keys", set).apply()
+                allSms.removeAll(matching.toSet())
+                clearUnreadCount(address)
+                val arr = org.json.JSONArray().put(address)
+                sendEncryptedToHost(JSONObject().put("type", "CMD_DELETE_SMS").put("addresses", arr).toString())
+                refreshSmsThreadsUI()
+            }
+            .setNegativeButton("لغو", null)
+            .show()
+    }
+
+    private fun showBulkDeleteSmsDialog() {
+        val grouped = allSms.groupBy { contactsManager.normalizePhone(it.address).ifBlank { it.address } }
+        if (grouped.isEmpty()) {
+            Toast.makeText(this, "پیامکی برای حذف وجود ندارد", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val entries = grouped.entries.toList()
+        val labels = entries.map { e ->
+            val firstAddr = e.value.first().address
+            "${contactsManager.resolveName(firstAddr)} (${e.value.size} پیام)"
+        }.toTypedArray()
+        val checked = BooleanArray(labels.size)
+        AlertDialog.Builder(this)
+            .setTitle("حذف دسته‌ای پیامک‌ها")
+            .setMultiChoiceItems(labels, checked) { _, which, isChecked ->
+                checked[which] = isChecked
+            }
+            .setPositiveButton("حذف انتخاب‌شده‌ها") { _, _ ->
+                val prefs = getSharedPreferences("itell_deleted_v4", Context.MODE_PRIVATE)
+                val set = (prefs.getStringSet("deleted_sms_keys", emptySet()) ?: emptySet()).toMutableSet()
+                val addrArr = org.json.JSONArray()
+                var count = 0
+                for (i in checked.indices) {
+                    if (checked[i]) {
+                        val norm = entries[i].key
+                        val msgs = entries[i].value
+                        msgs.forEach { set.add("$norm|${it.timestamp}") }
+                        allSms.removeAll(msgs.toSet())
+                        clearUnreadCount(msgs.first().address)
+                        addrArr.put(msgs.first().address)
+                        count++
+                    }
+                }
+                if (count > 0) {
+                    prefs.edit().putStringSet("deleted_sms_keys", set).apply()
+                    sendEncryptedToHost(JSONObject().put("type", "CMD_DELETE_SMS").put("addresses", addrArr).toString())
+                    refreshSmsThreadsUI()
+                    Toast.makeText(this, "$count مکالمه حذف شد", Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setNeutralButton("حذف همه") { _, _ ->
+                val prefs = getSharedPreferences("itell_deleted_v4", Context.MODE_PRIVATE)
+                val set = (prefs.getStringSet("deleted_sms_keys", emptySet()) ?: emptySet()).toMutableSet()
+                allSms.forEach {
+                    val norm = contactsManager.normalizePhone(it.address).ifBlank { it.address }
+                    set.add("$norm|${it.timestamp}")
+                }
+                prefs.edit().putStringSet("deleted_sms_keys", set).apply()
+                allSms.clear()
+                getSharedPreferences("itell_unread_v4", Context.MODE_PRIVATE).edit().clear().apply()
+                updateSmsNavBadge()
+                ClientBridgeService.updateAppIconBadge(this)
+                sendEncryptedToHost(JSONObject().put("type", "CMD_DELETE_SMS").put("all", true).toString())
+                refreshSmsThreadsUI()
+                Toast.makeText(this, "تمام پیامک‌ها حذف شدند", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("لغو", null)
+            .show()
     }
 
     // ==================== ناوبری پایین ====================
@@ -1730,6 +1916,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun switchTab(index: Int) {
         activeTab = index
+        if (index == 1) {
+            ClientBridgeService.clearMissedCalls(this)
+            updateSmsNavBadge()
+        }
         tabDashboard.visibility = if (index == 0) View.VISIBLE else View.GONE
         tabCalls.visibility = if (index == 1) View.VISIBLE else View.GONE
         tabSms.visibility = if (index == 2) View.VISIBLE else View.GONE
@@ -1865,16 +2055,16 @@ class MainActivity : AppCompatActivity() {
             "SMS_LIST" -> {
                 val arr = json.optJSONArray("items") ?: return
                 allSms.clear()
+                val hiddenSms = getSharedPreferences("itell_deleted_v4", Context.MODE_PRIVATE)
+                    .getStringSet("deleted_sms_keys", emptySet()) ?: emptySet()
                 for (i in 0 until arr.length()) {
                     val o = arr.getJSONObject(i)
-                    allSms.add(
-                        SmsItem(
-                            o.optString("sender"),
-                            o.optString("body"),
-                            o.optLong("timestamp", System.currentTimeMillis()),
-                            o.optBoolean("outgoing", false)
-                        )
-                    )
+                    val sAddr = o.optString("sender")
+                    val sTs = o.optLong("timestamp", System.currentTimeMillis())
+                    val key = "${contactsManager.normalizePhone(sAddr).ifBlank { sAddr }}|$sTs"
+                    if (!hiddenSms.contains(key)) {
+                        allSms.add(SmsItem(sAddr, o.optString("body"), sTs, o.optBoolean("outgoing", false)))
+                    }
                 }
                 refreshSmsThreadsUI()
                 refreshOpenChatUI()
@@ -1890,17 +2080,16 @@ class MainActivity : AppCompatActivity() {
             "CALLLOG_LIST" -> {
                 val arr = json.optJSONArray("items") ?: return
                 callLogs.clear()
+                val hiddenCalls = getSharedPreferences("itell_deleted_v4", Context.MODE_PRIVATE)
+                    .getStringSet("deleted_call_keys", emptySet()) ?: emptySet()
                 for (i in 0 until arr.length()) {
                     val o = arr.getJSONObject(i)
-                    callLogs.add(
-                        CallLogItem(
-                            o.optString("number"),
-                            o.optString("name"),
-                            o.optInt("callType", 1),
-                            o.optLong("date", System.currentTimeMillis()),
-                            o.optLong("duration", 0)
-                        )
-                    )
+                    val cNum = o.optString("number")
+                    val cDate = o.optLong("date", System.currentTimeMillis())
+                    val key = "$cNum|$cDate"
+                    if (!hiddenCalls.contains(key)) {
+                        callLogs.add(CallLogItem(cNum, o.optString("name"), o.optInt("callType", 1), cDate, o.optLong("duration", 0)))
+                    }
                 }
                 refreshCallLogUI()
             }
@@ -1923,7 +2112,7 @@ class MainActivity : AppCompatActivity() {
                 runOnUiThread { startCallTimer() }
             }
             "CALL_ENDED" -> {
-                runOnUiThread { hideInCallScreen() }
+                runOnUiThread { hideInCallScreen(); updateSmsNavBadge() }
                 sendEncryptedToHost(JSONObject().put("type", "CMD_SYNC_CALLLOG").toString())
             }
             "USSD_RESULT" -> {
@@ -2118,6 +2307,7 @@ class MainActivity : AppCompatActivity() {
             Manifest.permission.SEND_SMS,
             Manifest.permission.READ_PHONE_STATE,
             Manifest.permission.READ_CALL_LOG,
+            Manifest.permission.WRITE_CALL_LOG,
             Manifest.permission.CALL_PHONE,
             Manifest.permission.READ_CONTACTS,
             Manifest.permission.RECORD_AUDIO

@@ -260,7 +260,7 @@ class HostBridgeService : Service() {
         )
 
         startStatusMonitorLoop()
-        onHostLog?.invoke("میزبان v4.4 روی ${getLocalIpAddress()}:8888 و پروکسی 8080 فعال شد.")
+        onHostLog?.invoke("میزبان v4.6 روی ${getLocalIpAddress()}:8888 و پروکسی 8080 فعال شد.")
         return START_STICKY
     }
 
@@ -370,6 +370,8 @@ class HostBridgeService : Service() {
                 }
                 "CMD_ANSWER_CALL" -> answerCallCompat()
                 "CMD_END_CALL" -> endCallCompat()
+                "CMD_DELETE_CALLLOG" -> deleteCallLogCompat(json)
+                "CMD_DELETE_SMS" -> deleteSmsCompat(json)
                 "CMD_START_AUDIO" -> {
                     val targetIp = json.optString("ip", clientIp).ifBlank { clientIp }
                     callAudioRouter?.stopCallBridge()
@@ -620,6 +622,14 @@ class HostBridgeService : Service() {
         }
 
         if (!answered) {
+            if (CallNotificationHelper.answerCall(this)) {
+                answered = true
+            } else if (!CallNotificationHelper.isConnected() && Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+                sendFeedback("در گوشی اول (اندروید ۵) دکمه «فعال‌سازی پاسخ و قطع تماس» را در داشبورد بزنید و تیک Samen Pro را روشن کنید.")
+            }
+        }
+
+        if (!answered) {
             try {
                 val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
                 val now = SystemClock.uptimeMillis()
@@ -684,13 +694,78 @@ class HostBridgeService : Service() {
                 val endMethod = Class.forName(telephonyInterface.javaClass.name).getDeclaredMethod("endCall")
                 endMethod.invoke(telephonyInterface)
                 ended = true
-            } catch (e: Exception) {
-                sendFeedback("خطا در قطع تماس: ${e.message}")
+            } catch (_: Exception) {
+            }
+        }
+
+        if (!ended) {
+            if (CallNotificationHelper.endCall(this)) {
+                ended = true
+            } else {
+                sendFeedback("برای قطع تماس در اندروید ۵، در داشبورد گوشی اول دکمه «فعال‌سازی پاسخ و قطع تماس» را تایید کنید.")
             }
         }
 
         if (ended) {
             onHostLog?.invoke("تماس از گوشی دوم قطع شد.")
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun deleteCallLogCompat(json: JSONObject) {
+        try {
+            if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.WRITE_CALL_LOG) != PackageManager.PERMISSION_GRANTED) {
+                onHostLog?.invoke("مجوز WRITE_CALL_LOG روی گوشی اول فعال نیست.")
+                return
+            }
+            if (json.optBoolean("all", false)) {
+                contentResolver.delete(CallLog.Calls.CONTENT_URI, null, null)
+                onHostLog?.invoke("تمام سابقه تماس‌ها روی گوشی اول پاک شد.")
+            } else {
+                val arr = json.optJSONArray("items")
+                if (arr != null) {
+                    for (i in 0 until arr.length()) {
+                        val obj = arr.optJSONObject(i) ?: continue
+                        val num = obj.optString("number")
+                        val date = obj.optLong("date", 0L)
+                        if (date > 0L) {
+                            contentResolver.delete(
+                                CallLog.Calls.CONTENT_URI,
+                                "${CallLog.Calls.NUMBER}=? AND ${CallLog.Calls.DATE}=?",
+                                arrayOf(num, date.toString())
+                            )
+                        } else if (num.isNotBlank()) {
+                            contentResolver.delete(
+                                CallLog.Calls.CONTENT_URI,
+                                "${CallLog.Calls.NUMBER}=?",
+                                arrayOf(num)
+                            )
+                        }
+                    }
+                    onHostLog?.invoke("تماس‌های انتخاب‌شده روی گوشی اول حذف شدند.")
+                }
+            }
+        } catch (e: Exception) {
+            onHostLog?.invoke("خطا در حذف سابقه تماس: ${e.message}")
+        }
+    }
+
+    private fun deleteSmsCompat(json: JSONObject) {
+        try {
+            if (json.optBoolean("all", false)) {
+                contentResolver.delete(Uri.parse("content://sms"), null, null)
+            } else {
+                val arr = json.optJSONArray("addresses")
+                if (arr != null) {
+                    for (i in 0 until arr.length()) {
+                        val addr = arr.optString(i)
+                        if (addr.isNotBlank()) {
+                            contentResolver.delete(Uri.parse("content://sms"), "address=?", arrayOf(addr))
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {
         }
     }
 
@@ -724,7 +799,7 @@ class HostBridgeService : Service() {
             Notification.Builder(this)
         }
         val notification = builder
-            .setContentTitle("Samen Pro v4.4 (میزبان فعال)")
+            .setContentTitle("Samen Pro v4.6 (میزبان فعال)")
             .setContentText("IP: ${getLocalIpAddress()} | پورت 8888 | پروکسی 8080")
             .setSmallIcon(android.R.drawable.stat_sys_phone_call)
             .build()

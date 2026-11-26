@@ -8,7 +8,13 @@ import android.content.Intent
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
+import android.media.AudioAttributes
+import android.media.AudioManager
+import android.media.MediaPlayer
+import android.media.RingtoneManager
 import android.os.PowerManager
+import android.os.VibrationEffect
+import android.os.Vibrator
 import androidx.core.app.NotificationCompat
 import org.json.JSONObject
 import java.io.BufferedReader
@@ -25,6 +31,10 @@ class ClientBridgeService : Service() {
     private var btSocket: BluetoothSocket? = null
     private var clientWriter: PrintWriter? = null
     private var wakeLock: PowerManager.WakeLock? = null
+    private var ringtonePlayer: MediaPlayer? = null
+    private var callVibrator: Vibrator? = null
+    @Volatile private var hasPendingIncomingCall = false
+    @Volatile private var pendingIncomingNumber = ""
     private var wifiLock: WifiManager.WifiLock? = null
     @Volatile private var loopRunning = false
     @Volatile private var preferIpSwitch = false
@@ -58,6 +68,42 @@ class ClientBridgeService : Service() {
         fun sendEncrypted(plainJson: String) {
             instance?.sendEncryptedInternal(plainJson)
         }
+
+        fun stopRingtone() {
+            instance?.stopRingtoneInternal()
+        }
+
+        fun getTotalUnreadSms(context: Context): Int {
+            val all = context.getSharedPreferences("itell_unread_v4", Context.MODE_PRIVATE).all
+            var total = 0
+            for (v in all.values) {
+                if (v is Int && v > 0) total += v
+            }
+            return total
+        }
+
+        fun getMissedCallsCount(context: Context): Int {
+            return context.getSharedPreferences("itell_missed_v4", Context.MODE_PRIVATE).getInt("count", 0)
+        }
+
+        fun clearMissedCalls(context: Context) {
+            context.getSharedPreferences("itell_missed_v4", Context.MODE_PRIVATE).edit().putInt("count", 0).apply()
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            nm.cancel(302)
+            updateAppIconBadge(context)
+        }
+
+        fun updateAppIconBadge(context: Context) {
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            val unreadSms = getTotalUnreadSms(context)
+            val missedCalls = getMissedCallsCount(context)
+            if (unreadSms <= 0) {
+                nm.cancel(201)
+            }
+            if (missedCalls <= 0) {
+                nm.cancel(302)
+            }
+        }
     }
 
     override fun onCreate() {
@@ -89,7 +135,8 @@ class ClientBridgeService : Service() {
             if (autoSwitchEnabled && !userManuallyDisconnected && isConnected && activeTransport == "BT") {
                 preferIpSwitch = true
                 onLog?.invoke("وای‌فای/هات‌اسپات گوشی اول (${host.ip}) پیدا شد ← سوئیچ خودکار به وای‌فای...")
-                disconnectSocket()
+                stopRingtoneInternal()
+        disconnectSocket()
             }
         }
     }
@@ -313,17 +360,86 @@ class ClientBridgeService : Service() {
         return didConnect
     }
 
+    private fun startRingtoneInternal() {
+        stopRingtoneInternal()
+        try {
+            val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+                ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+            ringtonePlayer = MediaPlayer().apply {
+                setDataSource(this@ClientBridgeService, uri)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                            .build()
+                    )
+                } else {
+                    @Suppress("DEPRECATION")
+                    setAudioStreamType(AudioManager.STREAM_RING)
+                }
+                isLooping = true
+                prepare()
+                start()
+            }
+        } catch (_: Exception) {
+        }
+        try {
+            @Suppress("DEPRECATION")
+            val vib = getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+            callVibrator = vib
+            val pattern = longArrayOf(0, 800, 600)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vib?.vibrate(VibrationEffect.createWaveform(pattern, 0))
+            } else {
+                @Suppress("DEPRECATION")
+                vib?.vibrate(pattern, 0)
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun stopRingtoneInternal() {
+        try {
+            ringtonePlayer?.stop()
+            ringtonePlayer?.release()
+        } catch (_: Exception) {
+        }
+        ringtonePlayer = null
+        try {
+            callVibrator?.cancel()
+        } catch (_: Exception) {
+        }
+        callVibrator = null
+    }
+
     private fun handleBackgroundEvent(json: JSONObject) {
         val cm = ContactsManager(this)
         when (json.optString("type")) {
             "INCOMING_CALL" -> {
                 val number = json.optString("number")
                 val name = cm.resolveName(number)
+                hasPendingIncomingCall = true
+                pendingIncomingNumber = number
+                startRingtoneInternal()
                 wakeScreenAndLaunchInCall(number, name)
             }
+            "CALL_ACTIVE" -> {
+                hasPendingIncomingCall = false
+                stopRingtoneInternal()
+            }
             "CALL_ENDED" -> {
+                stopRingtoneInternal()
                 val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                 nm.cancel(301)
+                if (hasPendingIncomingCall) {
+                    hasPendingIncomingCall = false
+                    val missedPrefs = getSharedPreferences("itell_missed_v4", Context.MODE_PRIVATE)
+                    val newMissed = missedPrefs.getInt("count", 0) + 1
+                    missedPrefs.edit().putInt("count", newMissed).apply()
+                    val name = cm.resolveName(pendingIncomingNumber)
+                    showSimpleAlert(302, "تماس از دست رفته ($newMissed)", "$name ($pendingIncomingNumber)", "call_channel", null, newMissed)
+                }
             }
             "NEW_SMS" -> {
                 val sender = json.optString("sender")
@@ -332,12 +448,13 @@ class ClientBridgeService : Service() {
                 val unreadPrefs = getSharedPreferences("itell_unread_v4", Context.MODE_PRIVATE)
                 val prev = unreadPrefs.getInt(norm, 0)
                 unreadPrefs.edit().putInt(norm, prev + 1).apply()
+                val totalUnread = getTotalUnreadSms(this)
                 val name = cm.resolveName(sender)
                 val otp = OtpCopyReceiver.extractOtp(body)
                 if (!otp.isNullOrBlank()) {
                     OtpCopyReceiver.copyToClipboard(this, otp, showToast = true)
                 }
-                showSimpleAlert(201, "پیامک از $name", body, "sms_channel", otp)
+                showSimpleAlert(201, "پیامک از $name", body, "sms_channel", otp, totalUnread)
             }
             "LOW_BATTERY" -> {
                 val bat = json.optInt("battery", 15)
@@ -379,6 +496,7 @@ class ClientBridgeService : Service() {
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setDefaults(NotificationCompat.DEFAULT_ALL)
             .setOngoing(true)
+            .setNumber(badgeCount)
             .setAutoCancel(true)
             .setFullScreenIntent(fullScreenPi, true)
             .setContentIntent(fullScreenPi)
@@ -393,7 +511,7 @@ class ClientBridgeService : Service() {
         }
     }
 
-    private fun showSimpleAlert(id: Int, title: String, content: String, channelId: String, otpCode: String?) {
+    private fun showSimpleAlert(id: Int, title: String, content: String, channelId: String, otpCode: String?, badgeCount: Int = 1) {
         val openIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
         }
@@ -412,6 +530,7 @@ class ClientBridgeService : Service() {
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setDefaults(NotificationCompat.DEFAULT_ALL)
             .setContentIntent(openPi)
+            .setNumber(badgeCount)
             .setAutoCancel(true)
 
         if (!otpCode.isNullOrBlank()) {
