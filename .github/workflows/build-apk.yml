@@ -26,6 +26,9 @@ jobs:
           if [ -f ic_launcher.png ]; then
             mv ic_launcher.png app/src/main/res/mipmap-xxxhdpi/
           fi
+          if [ -f samen_signing.jks ]; then
+            cp samen_signing.jks app/samen_signing.jks
+          fi
 
           cat << 'EOF' > settings.gradle.kts
           pluginManagement {
@@ -73,13 +76,26 @@ jobs:
                   applicationId = "com.bridge.itell"
                   minSdk = 21
                   targetSdk = 34
-                  versionCode = 6
-                  versionName = "4.2"
+                  versionCode = 12
+                  versionName = "4.8"
+              }
+
+              signingConfigs {
+                  create("samenFixed") {
+                      storeFile = file("samen_signing.jks")
+                      storePassword = "SamenPro2026!"
+                      keyAlias = "samenpro"
+                      keyPassword = "SamenPro2026!"
+                  }
               }
 
               buildTypes {
+                  debug {
+                      signingConfig = signingConfigs.getByName("samenFixed")
+                  }
                   release {
                       isMinifyEnabled = false
+                      signingConfig = signingConfigs.getByName("samenFixed")
                   }
               }
               compileOptions {
@@ -116,5 +132,5 @@ jobs:
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SamenPro-v4.2-APK
+          name: SamenPro-v4.8-APK
           path: app/build/outputs/apk/debug/app-debug.apk
