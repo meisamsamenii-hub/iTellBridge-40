@@ -70,8 +70,8 @@ class MainActivity : AppCompatActivity() {
     private var connectedHostIp = ""
     private var callAudioRouter: CallAudioRouter? = null
 
-    private val allSms = mutableListOf<SmsItem>()
-    private val callLogs = mutableListOf<CallLogItem>()
+    private val allSms = java.util.concurrent.CopyOnWriteArrayList<SmsItem>()
+    private val callLogs = java.util.concurrent.CopyOnWriteArrayList<CallLogItem>()
     private var openChatAddress: String? = null
     private var activeTab = 0
     private var selectedSimSlot = -1 // -1: پیش‌فرض، 0: سیم‌کارت ۱، 1: سیم‌کارت ۲
@@ -150,6 +150,15 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val prevHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            try {
+                val msg = "${throwable.javaClass.simpleName}: ${throwable.message} (${throwable.stackTrace.firstOrNull()})"
+                getSharedPreferences("itell_cfg", Context.MODE_PRIVATE).edit().putString("last_crash", msg).apply()
+            } catch (_: Exception) {
+            }
+            prevHandler?.uncaughtException(thread, throwable)
+        }
         applyLockScreenFlags()
         contactsManager = ContactsManager(this)
         licenseManager = LicenseManager(this)
@@ -211,6 +220,7 @@ class MainActivity : AppCompatActivity() {
         updateSmsNavBadge()
 
         bluetoothHeadsetMode = getSharedPreferences("itell_cfg", Context.MODE_PRIVATE).getBoolean("bt_headset_mode", true)
+        selectedSimSlot = getSharedPreferences("itell_cfg", Context.MODE_PRIVATE).getInt("selected_sim_slot", -1)
         HostBridgeService.onHostLog = { msg -> appendLog(msg) }
         bindClientServiceCallbacks()
         startAutoDiscovery()
@@ -238,6 +248,16 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun handleIncomingCallIntent(intent: Intent?) {
+        val directDial = intent?.getStringExtra("EXTRA_DIRECT_DIAL_NUMBER")
+        if (!directDial.isNullOrBlank()) {
+            intent.removeExtra("EXTRA_DIRECT_DIAL_NUMBER")
+            showInCallScreen(directDial, isIncoming = false)
+            if (!bluetoothHeadsetMode) {
+                sendEncryptedToHost(JSONObject().put("type", "CMD_START_AUDIO").toString())
+                startLocalAudioBridge()
+            }
+            return
+        }
         val number = intent?.getStringExtra(ClientBridgeService.EXTRA_INCOMING_CALL_NUMBER)
         if (!number.isNullOrBlank()) {
             applyLockScreenFlags()
@@ -331,7 +351,7 @@ class MainActivity : AppCompatActivity() {
             setTypeface(null, Typeface.BOLD)
         })
         titleCol.addView(TextView(this).apply {
-            text = "نسخه ۴.۶ • صدای زنگ واقعی + حذف تکی/دسته‌ای + شمارنده دقیق"
+            text = "نسخه ۴.۸ • ضدکرش + آپدیت بدون حذف + پیدا کردن گوشی اول"
             textSize = 11f
             setTextColor(colSubText)
         })
@@ -627,6 +647,64 @@ class MainActivity : AppCompatActivity() {
             ).apply { setMargins(0, dp(8), 0, 0) }
         }
         btCard.addView(notifAccessBtn)
+
+        val callRedirectRoleBtn = styledButton("📞 اتصال به اپ تلفن گوشی (شماره‌گیری مستقیم)", colGreen) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                try {
+                    val rm = getSystemService(android.app.role.RoleManager::class.java)
+                    if (rm != null && rm.isRoleAvailable(android.app.role.RoleManager.ROLE_CALL_REDIRECTION)) {
+                        if (rm.isRoleHeld(android.app.role.RoleManager.ROLE_CALL_REDIRECTION)) {
+                            Toast.makeText(this, "شماره‌گیری از اپ تلفن گوشی قبلاً فعال شده است!", Toast.LENGTH_SHORT).show()
+                        } else {
+                            startActivityForResult(rm.createRequestRoleIntent(android.app.role.RoleManager.ROLE_CALL_REDIRECTION), 409)
+                        }
+                    } else {
+                        Toast.makeText(this, "این قابلیت روی این نسخه اندروید پشتیبانی نمی‌شود", Toast.LENGTH_LONG).show()
+                    }
+                } catch (_: Exception) {
+                    try {
+                        startActivity(Intent(android.provider.Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS))
+                    } catch (_: Exception) {}
+                }
+            } else {
+                Toast.makeText(this, "شماره‌گیری از اپ تلفن گوشی نیازمند اندروید ۱۰ به بالا است", Toast.LENGTH_LONG).show()
+            }
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(0, dp(8), 0, 0) }
+        }
+        btCard.addView(callRedirectRoleBtn)
+
+        var redirectOn = getSharedPreferences("itell_cfg", Context.MODE_PRIVATE).getBoolean("call_redirect_enabled", true)
+        val redirectToggleBtn = styledButton(
+            if (redirectOn) "🔀 هدایت تماس اپ تلفن به گوشی اول: روشن" else "🔀 هدایت تماس اپ تلفن به گوشی اول: خاموش",
+            if (redirectOn) colAccent else colCardLight
+        ) {}
+        redirectToggleBtn.layoutParams = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { setMargins(0, dp(8), 0, 0) }
+        redirectToggleBtn.setOnClickListener {
+            redirectOn = !redirectOn
+            getSharedPreferences("itell_cfg", Context.MODE_PRIVATE).edit()
+                .putBoolean("call_redirect_enabled", redirectOn).apply()
+            redirectToggleBtn.text = if (redirectOn) "🔀 هدایت تماس اپ تلفن به گوشی اول: روشن" else "🔀 هدایت تماس اپ تلفن به گوشی اول: خاموش"
+            redirectToggleBtn.background = roundedBg(if (redirectOn) colAccent else colCardLight, 12)
+        }
+        btCard.addView(redirectToggleBtn)
+        val findHostBtn = styledButton("📢 پیدا کردن گوشی اول (زنگ بلند حتی در حالت سایلنت)", colAmber) {
+            if (!isConnected) {
+                Toast.makeText(this, "ابتدا به گوشی اول متصل شوید", Toast.LENGTH_SHORT).show()
+            } else {
+                sendEncryptedToHost(JSONObject().put("type", "CMD_FIND_HOST").toString())
+                Toast.makeText(this, "فرمان زنگ زدن به گوشی اول ارسال شد", Toast.LENGTH_SHORT).show()
+            }
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(0, dp(8), 0, 0) }
+        }
+        btCard.addView(findHostBtn)
         col.addView(btCard)
 
         // کارت کشف خودکار (Zero-Config)
@@ -944,6 +1022,8 @@ class MainActivity : AppCompatActivity() {
                 }
                 setOnClickListener {
                     selectedSimSlot = slot
+                    getSharedPreferences("itell_cfg", Context.MODE_PRIVATE).edit()
+                        .putInt("selected_sim_slot", slot).apply()
                     refreshSimSelectorUI()
                 }
             }
@@ -1689,7 +1769,7 @@ class MainActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         }
         logText = TextView(this).apply {
-            text = "آماده...\n"
+            text = "آماده...\n" + (getSharedPreferences("itell_cfg", Context.MODE_PRIVATE).getString("last_crash", "")?.takeIf { it.isNotBlank() }?.let { "⚠️ آخرین خطای ثبت‌شده: $it\n" } ?: "")
             textSize = 11f
             setTextColor(colSubText)
             setLineSpacing(dp(4).toFloat(), 1f)

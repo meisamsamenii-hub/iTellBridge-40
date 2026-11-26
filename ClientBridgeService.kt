@@ -163,7 +163,22 @@ class ClientBridgeService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForeground(102, buildForegroundNotification("در حال اتصال به گوشی میزبان..."))
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(
+                    102,
+                    buildForegroundNotification("در حال اتصال به گوشی میزبان..."),
+                    android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                )
+            } else {
+                startForeground(102, buildForegroundNotification("در حال اتصال به گوشی میزبان..."))
+            }
+        } catch (_: Exception) {
+            try {
+                startForeground(102, buildForegroundNotification("در حال اتصال به گوشی میزبان..."))
+            } catch (_: Exception) {
+            }
+        }
 
         when (intent?.action) {
             ACTION_SET_AUTO_SWITCH -> {
@@ -496,7 +511,6 @@ class ClientBridgeService : Service() {
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setDefaults(NotificationCompat.DEFAULT_ALL)
             .setOngoing(true)
-    
             .setAutoCancel(true)
             .setFullScreenIntent(fullScreenPi, true)
             .setContentIntent(fullScreenPi)

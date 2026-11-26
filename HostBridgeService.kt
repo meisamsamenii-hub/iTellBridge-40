@@ -9,6 +9,8 @@ import android.content.pm.PackageManager
 import android.database.ContentObserver
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
+import android.media.MediaPlayer
+import android.media.RingtoneManager
 import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.BatteryManager
@@ -117,6 +119,7 @@ class HostBridgeService : Service() {
         super.onCreate()
         instance = this
         isRunning = true
+        getSharedPreferences("itell_cfg", Context.MODE_PRIVATE).edit().putBoolean("was_host_running", true).apply()
         acquireLocks()
         registerDynamicSmsReceiver()
         registerDynamicCallReceiver()
@@ -260,7 +263,7 @@ class HostBridgeService : Service() {
         )
 
         startStatusMonitorLoop()
-        onHostLog?.invoke("میزبان v4.6 روی ${getLocalIpAddress()}:8888 و پروکسی 8080 فعال شد.")
+        onHostLog?.invoke("میزبان v4.8 روی ${getLocalIpAddress()}:8888 و پروکسی 8080 فعال شد.")
         return START_STICKY
     }
 
@@ -372,6 +375,7 @@ class HostBridgeService : Service() {
                 "CMD_END_CALL" -> endCallCompat()
                 "CMD_DELETE_CALLLOG" -> deleteCallLogCompat(json)
                 "CMD_DELETE_SMS" -> deleteSmsCompat(json)
+                "CMD_FIND_HOST" -> ringHostLoudly()
                 "CMD_START_AUDIO" -> {
                     val targetIp = json.optString("ip", clientIp).ifBlank { clientIp }
                     callAudioRouter?.stopCallBridge()
@@ -769,6 +773,35 @@ class HostBridgeService : Service() {
         }
     }
 
+    private fun ringHostLoudly() {
+        try {
+            val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            val maxVol = am.getStreamMaxVolume(AudioManager.STREAM_ALARM)
+            am.setStreamVolume(AudioManager.STREAM_ALARM, maxVol, 0)
+            val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+                ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+            val mp = MediaPlayer().apply {
+                setDataSource(this@HostBridgeService, uri)
+                @Suppress("DEPRECATION")
+                setAudioStreamType(AudioManager.STREAM_ALARM)
+                isLooping = true
+                prepare()
+                start()
+            }
+            onHostLog?.invoke("زنگ پیدا کردن گوشی اول فعال شد (۸ ثانیه)")
+            sendFeedback("گوشی اول به مدت ۸ ثانیه با حداکثر صدا زنگ می‌زند...")
+            Handler(Looper.getMainLooper()).postDelayed({
+                try {
+                    mp.stop()
+                    mp.release()
+                } catch (_: Exception) {
+                }
+            }, 8000L)
+        } catch (e: Exception) {
+            sendFeedback("خطا در پخش زنگ گوشی اول: ${e.message}")
+        }
+    }
+
     private fun sendFeedback(message: String) {
         val res = JSONObject().apply {
             put("type", "SYSTEM_MSG")
@@ -799,7 +832,7 @@ class HostBridgeService : Service() {
             Notification.Builder(this)
         }
         val notification = builder
-            .setContentTitle("Samen Pro v4.6 (میزبان فعال)")
+            .setContentTitle("Samen Pro v4.8 (میزبان فعال)")
             .setContentText("IP: ${getLocalIpAddress()} | پورت 8888 | پروکسی 8080")
             .setSmallIcon(android.R.drawable.stat_sys_phone_call)
             .build()
@@ -819,6 +852,7 @@ class HostBridgeService : Service() {
         try { if (wakeLock?.isHeld == true) wakeLock?.release() } catch (_: Exception) {}
         try { if (wifiLock?.isHeld == true) wifiLock?.release() } catch (_: Exception) {}
         isRunning = false
+        getSharedPreferences("itell_cfg", Context.MODE_PRIVATE).edit().putBoolean("was_host_running", false).apply()
         instance = null
         super.onDestroy()
     }
