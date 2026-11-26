@@ -496,7 +496,7 @@ class ClientBridgeService : Service() {
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setDefaults(NotificationCompat.DEFAULT_ALL)
             .setOngoing(true)
-            .setNumber(badgeCount)
+    
             .setAutoCancel(true)
             .setFullScreenIntent(fullScreenPi, true)
             .setContentIntent(fullScreenPi)
