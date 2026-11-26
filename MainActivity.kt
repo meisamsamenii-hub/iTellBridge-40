@@ -331,7 +331,7 @@ class MainActivity : AppCompatActivity() {
             setTypeface(null, Typeface.BOLD)
         })
         titleCol.addView(TextView(this).apply {
-            text = "نسخه ۴.۳ • تماس تمام‌صفحه + هندزفری خودکار + پیامک نخوانده"
+            text = "نسخه ۴.۴ • لینک کلیک‌پذیر + کپی خودکار رمز پویا"
             textSize = 11f
             setTextColor(colSubText)
         })
@@ -1426,10 +1426,35 @@ class MainActivity : AppCompatActivity() {
                     setPadding(dp(12), dp(8), dp(12), dp(8))
                 }
                 bubble.addView(TextView(this).apply {
+                    autoLinkMask = android.text.util.Linkify.WEB_URLS or android.text.util.Linkify.PHONE_NUMBERS
+                    linksClickable = true
+                    setLinkTextColor(colAccent)
+                    movementMethod = android.text.method.LinkMovementMethod.getInstance()
+                    setTextIsSelectable(true)
                     text = m.body
                     textSize = 14f
                     setTextColor(colText)
                 })
+                if (!m.isOutgoing) {
+                    val otpCode = OtpCopyReceiver.extractOtp(m.body)
+                    if (!otpCode.isNullOrBlank()) {
+                        bubble.addView(TextView(this).apply {
+                            text = "📋 کپی کد ($otpCode)"
+                            textSize = 12f
+                            setTextColor(Color.WHITE)
+                            setTypeface(null, Typeface.BOLD)
+                            gravity = Gravity.CENTER
+                            background = roundedBg(colGreen, 10)
+                            setPadding(dp(10), dp(6), dp(10), dp(6))
+                            layoutParams = LinearLayout.LayoutParams(
+                                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                            ).apply { setMargins(0, dp(6), 0, 0) }
+                            setOnClickListener {
+                                OtpCopyReceiver.copyToClipboard(this@MainActivity, otpCode, showToast = true)
+                            }
+                        })
+                    }
+                }
                 bubble.addView(TextView(this).apply {
                     text = fmt.format(Date(m.timestamp))
                     textSize = 10f

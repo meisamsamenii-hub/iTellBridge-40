@@ -334,6 +334,9 @@ class ClientBridgeService : Service() {
                 unreadPrefs.edit().putInt(norm, prev + 1).apply()
                 val name = cm.resolveName(sender)
                 val otp = OtpCopyReceiver.extractOtp(body)
+                if (!otp.isNullOrBlank()) {
+                    OtpCopyReceiver.copyToClipboard(this, otp, showToast = true)
+                }
                 showSimpleAlert(201, "پیامک از $name", body, "sms_channel", otp)
             }
             "LOW_BATTERY" -> {

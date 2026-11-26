@@ -260,7 +260,7 @@ class HostBridgeService : Service() {
         )
 
         startStatusMonitorLoop()
-        onHostLog?.invoke("میزبان v4.3 روی ${getLocalIpAddress()}:8888 و پروکسی 8080 فعال شد.")
+        onHostLog?.invoke("میزبان v4.4 روی ${getLocalIpAddress()}:8888 و پروکسی 8080 فعال شد.")
         return START_STICKY
     }
 
@@ -724,7 +724,7 @@ class HostBridgeService : Service() {
             Notification.Builder(this)
         }
         val notification = builder
-            .setContentTitle("Samen Pro v4.3 (میزبان فعال)")
+            .setContentTitle("Samen Pro v4.4 (میزبان فعال)")
             .setContentText("IP: ${getLocalIpAddress()} | پورت 8888 | پروکسی 8080")
             .setSmallIcon(android.R.drawable.stat_sys_phone_call)
             .build()
