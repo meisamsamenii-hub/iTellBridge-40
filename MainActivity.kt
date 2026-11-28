@@ -36,7 +36,7 @@ import java.text.SimpleDateFormat
 import java.util.*
 import kotlin.concurrent.thread
 
-data class SmsItem(val address: String, val body: String, val timestamp: Long, val isOutgoing: Boolean)
+data class SmsItem(val address: String, val body: String, val timestamp: Long, val isOutgoing: Boolean, var status: String = "")
 data class CallLogItem(val number: String, val name: String, val type: Int, val date: Long, val duration: Long)
 
 class MainActivity : AppCompatActivity() {
@@ -57,6 +57,8 @@ class MainActivity : AppCompatActivity() {
     private val aesKey = "12345678901234567890123456789012".toByteArray()
     private lateinit var contactsManager: ContactsManager
     private lateinit var licenseManager: LicenseManager
+    private var licenseLockOverlay: View? = null
+    private var lastRevokeCheckMs: Long = 0L
     private lateinit var btDevicesContainer: LinearLayout
     private val discoveryManager = DiscoveryManager()
     private val discoveredHosts = LinkedHashMap<String, DiscoveredHost>()
@@ -205,15 +207,9 @@ class MainActivity : AppCompatActivity() {
         rootFrame.addView(inCallOverlay)
 
         if (!licenseManager.isActivated()) {
-            rootFrame.addView(buildLicenseLockOverlay())
+            showLicenseLockScreen(null)
         } else {
-            licenseManager.checkOnlineApproval { approved, msg ->
-                if (!approved && msg.contains("غیرفعال")) {
-                    runOnUiThread {
-                        rootFrame.addView(buildLicenseLockOverlay())
-                    }
-                }
-            }
+            checkRemoteRevocationNow(force = true)
         }
         setContentView(rootFrame)
         switchTab(0)
@@ -299,6 +295,40 @@ class MainActivity : AppCompatActivity() {
             sendEncryptedToHost(JSONObject().put("type", "CMD_SYNC_SMS").toString())
             sendEncryptedToHost(JSONObject().put("type", "CMD_SYNC_CALLLOG").toString())
         }
+        if (licenseManager.isActivated()) {
+            checkRemoteRevocationNow(force = false)
+        }
+    }
+
+    private fun showLicenseLockScreen(reason: String?) {
+        runOnUiThread {
+            if (licenseLockOverlay != null) {
+                try { rootFrame.removeView(licenseLockOverlay) } catch (_: Exception) {}
+                licenseLockOverlay = null
+            }
+            val overlay = buildLicenseLockOverlay()
+            licenseLockOverlay = overlay
+            rootFrame.addView(overlay)
+            if (!reason.isNullOrBlank()) {
+                Toast.makeText(this, reason, Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun checkRemoteRevocationNow(force: Boolean) {
+        val now = System.currentTimeMillis()
+        if (!force && (now - lastRevokeCheckMs) < 60_000L) return
+        lastRevokeCheckMs = now
+        licenseManager.verifyRemoteRevocation { msg ->
+            runOnUiThread {
+                try {
+                    stopService(Intent(this, HostBridgeService::class.java))
+                    stopService(Intent(this, ClientBridgeService::class.java))
+                } catch (_: Exception) {
+                }
+                showLicenseLockScreen(msg)
+            }
+        }
     }
 
     override fun onDestroy() {
@@ -351,7 +381,7 @@ class MainActivity : AppCompatActivity() {
             setTypeface(null, Typeface.BOLD)
         })
         titleCol.addView(TextView(this).apply {
-            text = "نسخه ۴.۸ • ضدکرش + آپدیت بدون حذف + پیدا کردن گوشی اول"
+            text = "نسخه ۵.۱ • دلیوری پیامک (✓✓) + خواندن USSD + قفل خودکار"
             textSize = 11f
             setTextColor(colSubText)
         })
@@ -705,6 +735,18 @@ class MainActivity : AppCompatActivity() {
             ).apply { setMargins(0, dp(8), 0, 0) }
         }
         btCard.addView(findHostBtn)
+        val ussdAccessBtn = styledButton("📡 فعال‌سازی خواندن کدهای USSD (مخصوص گوشی اول / اندروید ۵)", colPurple) {
+            try {
+                startActivity(Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            } catch (_: Exception) {
+                Toast.makeText(this, "از تنظیمات گوشی بخش Accessibility را برای Samen Pro روشن کنید", Toast.LENGTH_LONG).show()
+            }
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(0, dp(8), 0, 0) }
+        }
+        btCard.addView(ussdAccessBtn)
         col.addView(btCard)
 
         // کارت کشف خودکار (Zero-Config)
@@ -1567,10 +1609,26 @@ class MainActivity : AppCompatActivity() {
                         })
                     }
                 }
+                val statusMap = getSharedPreferences("itell_sms_status_v5", Context.MODE_PRIVATE)
+                val effectiveStatus = m.status.ifBlank { statusMap.getString(m.timestamp.toString(), "") ?: "" }
+                val tickStr = when {
+                    !m.isOutgoing -> ""
+                    effectiveStatus == "DELIVERED" -> "  ✓✓"
+                    effectiveStatus == "SENT" -> "  ✓"
+                    effectiveStatus == "FAILED" -> "  ✕"
+                    effectiveStatus == "SENDING" -> "  🕒"
+                    else -> ""
+                }
                 bubble.addView(TextView(this).apply {
-                    text = fmt.format(Date(m.timestamp))
-                    textSize = 10f
-                    setTextColor(colSubText)
+                    text = fmt.format(Date(m.timestamp)) + tickStr
+                    textSize = 10.5f
+                    setTextColor(
+                        when (effectiveStatus) {
+                            "DELIVERED" -> colAccent
+                            "FAILED" -> colRed
+                            else -> colSubText
+                        }
+                    )
                     gravity = Gravity.END
                     setPadding(0, dp(4), 0, 0)
                 })
@@ -1969,6 +2027,46 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
+    private fun showUssdResponseDialog(ussdText: String, interactive: Boolean) {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(14), dp(18), dp(8))
+        }
+        box.addView(TextView(this).apply {
+            text = ussdText
+            textSize = 14.5f
+            setTextIsSelectable(true)
+            setPadding(0, 0, 0, dp(10))
+        })
+        val replyInput = if (interactive) {
+            EditText(this).apply {
+                hint = "پاسخ خود را وارد کنید (مثلاً 1 یا 2)"
+                gravity = Gravity.CENTER
+            }.also { box.addView(it) }
+        } else null
+
+        val builder = AlertDialog.Builder(this)
+            .setTitle("📡 پاسخ کد USSD از گوشی اول")
+            .setView(box)
+
+        if (interactive && replyInput != null) {
+            builder.setPositiveButton("ارسال پاسخ") { _, _ ->
+                val ans = replyInput.text.toString().trim()
+                if (ans.isNotBlank()) {
+                    sendEncryptedToHost(JSONObject().put("type", "CMD_USSD_REPLY").put("reply", ans).toString())
+                }
+            }
+            builder.setNegativeButton("بستن") { _, _ ->
+                sendEncryptedToHost(JSONObject().put("type", "CMD_USSD_CANCEL").toString())
+            }
+        } else {
+            builder.setPositiveButton("تایید و بستن") { _, _ ->
+                sendEncryptedToHost(JSONObject().put("type", "CMD_USSD_CANCEL").toString())
+            }
+        }
+        builder.show()
+    }
+
     // ==================== ناوبری پایین ====================
     private fun buildBottomNav(): View {
         val nav = LinearLayout(this).apply {
@@ -2153,9 +2251,37 @@ class MainActivity : AppCompatActivity() {
                 val to = json.optString("to")
                 val body = json.optString("body")
                 val ts = json.optLong("timestamp", System.currentTimeMillis())
-                allSms.add(0, SmsItem(to, body, ts, true))
+                getSharedPreferences("itell_sms_status_v5", Context.MODE_PRIVATE).edit()
+                    .putString(ts.toString(), "SENDING").apply()
+                allSms.add(0, SmsItem(to, body, ts, true, "SENDING"))
                 refreshSmsThreadsUI()
                 refreshOpenChatUI()
+            }
+            "SMS_STATUS" -> {
+                val msgId = json.optLong("msgId", 0L)
+                val status = json.optString("status")
+                if (msgId > 0L && status.isNotBlank()) {
+                    getSharedPreferences("itell_sms_status_v5", Context.MODE_PRIVATE).edit()
+                        .putString(msgId.toString(), status).apply()
+                    for (item in allSms) {
+                        if (item.timestamp == msgId) {
+                            item.status = status
+                            break
+                        }
+                    }
+                    refreshOpenChatUI()
+                    if (status == "DELIVERED") {
+                        appendLog("دلیوری پیامک تایید شد (✓✓)")
+                    } else if (status == "FAILED") {
+                        appendLog("خطا در ارسال پیامک (✕)")
+                    }
+                }
+            }
+            "USSD_RESPONSE" -> {
+                val ussdText = json.optString("text")
+                val interactive = json.optBoolean("interactive", false)
+                appendLog("پاسخ USSD دریافت شد")
+                runOnUiThread { showUssdResponseDialog(ussdText, interactive) }
             }
             "CALLLOG_LIST" -> {
                 val arr = json.optJSONArray("items") ?: return

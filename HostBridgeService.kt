@@ -1,6 +1,7 @@
 package com.bridge.itell
 
 import android.annotation.SuppressLint
+import android.app.Activity
 import android.app.*
 import android.content.Context
 import android.content.Intent
@@ -51,6 +52,7 @@ class HostBridgeService : Service() {
     private var wifiLock: WifiManager.WifiLock? = null
     private var dynamicSmsReceiver: SmsReceiver? = null
     private var dynamicCallReceiver: CallReceiver? = null
+    private var smsStatusReceiver: BroadcastReceiver? = null
     private var smsObserver: ContentObserver? = null
     private var lastObservedSmsId: Long = -1L
 
@@ -62,6 +64,18 @@ class HostBridgeService : Service() {
         private var lastSmsTime: Long = 0L
         private var lastCallNumber: String = ""
         private var lastCallTime: Long = 0L
+
+        fun sendUssdResponseToClients(text: String, interactive: Boolean) {
+            val svc = instance ?: return
+            val json = JSONObject().apply {
+                put("type", "USSD_RESPONSE")
+                put("text", text)
+                put("interactive", interactive)
+                put("timestamp", System.currentTimeMillis())
+            }
+            svc.sendEncryptedToClients(json.toString())
+            onHostLog?.invoke("پاسخ USSD به گوشی دوم ارسال شد.")
+        }
 
         fun forwardEvent(plainJson: String) {
             try {
@@ -124,6 +138,51 @@ class HostBridgeService : Service() {
         registerDynamicSmsReceiver()
         registerDynamicCallReceiver()
         registerSmsContentObserver()
+        registerSmsStatusReceiver()
+    }
+
+    private fun registerSmsStatusReceiver() {
+        try {
+            smsStatusReceiver = object : BroadcastReceiver() {
+                override fun onReceive(context: Context?, intent: Intent?) {
+                    if (intent == null) return
+                    val msgId = intent.getLongExtra("msgId", 0L)
+                    val phone = intent.getStringExtra("phone") ?: ""
+                    when (intent.action) {
+                        "com.bridge.itell.SMS_SENT_STATUS" -> {
+                            val st = if (resultCode == Activity.RESULT_OK) "SENT" else "FAILED"
+                            sendSmsStatusUpdate(msgId, phone, st)
+                        }
+                        "com.bridge.itell.SMS_DELIVERED_STATUS" -> {
+                            if (resultCode == Activity.RESULT_OK) {
+                                sendSmsStatusUpdate(msgId, phone, "DELIVERED")
+                                onHostLog?.invoke("دلیوری پیامک به $phone تایید شد (✓✓)")
+                            }
+                        }
+                    }
+                }
+            }
+            val filter = IntentFilter().apply {
+                addAction("com.bridge.itell.SMS_SENT_STATUS")
+                addAction("com.bridge.itell.SMS_DELIVERED_STATUS")
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(smsStatusReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                registerReceiver(smsStatusReceiver, filter)
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun sendSmsStatusUpdate(msgId: Long, phone: String, status: String) {
+        val json = JSONObject().apply {
+            put("type", "SMS_STATUS")
+            put("msgId", msgId)
+            put("to", phone)
+            put("status", status)
+        }
+        sendEncryptedToClients(json.toString())
     }
 
     private fun registerDynamicCallReceiver() {
@@ -263,7 +322,7 @@ class HostBridgeService : Service() {
         )
 
         startStatusMonitorLoop()
-        onHostLog?.invoke("میزبان v4.8 روی ${getLocalIpAddress()}:8888 و پروکسی 8080 فعال شد.")
+        onHostLog?.invoke("میزبان v5.1 روی ${getLocalIpAddress()}:8888 و پروکسی 8080 فعال شد.")
         return START_STICKY
     }
 
@@ -376,6 +435,13 @@ class HostBridgeService : Service() {
                 "CMD_DELETE_CALLLOG" -> deleteCallLogCompat(json)
                 "CMD_DELETE_SMS" -> deleteSmsCompat(json)
                 "CMD_FIND_HOST" -> ringHostLoudly()
+                "CMD_USSD_REPLY" -> {
+                    val reply = json.optString("reply")
+                    if (!UssdAccessibilityService.replyToUssd(reply)) {
+                        sendFeedback("پنجره USSD روی گوشی اول فعال نیست یا مجوز Accessibility روشن نشده است.")
+                    }
+                }
+                "CMD_USSD_CANCEL" -> UssdAccessibilityService.cancelUssd()
                 "CMD_START_AUDIO" -> {
                     val targetIp = json.optString("ip", clientIp).ifBlank { clientIp }
                     callAudioRouter?.stopCallBridge()
@@ -455,14 +521,38 @@ class HostBridgeService : Service() {
                 @Suppress("DEPRECATION")
                 SmsManager.getDefault()
             }
+            val msgId = System.currentTimeMillis()
             val parts = smsManager.divideMessage(message)
-            smsManager.sendMultipartTextMessage(phone, null, parts, null, null)
-            onHostLog?.invoke("پیامک به $phone ارسال شد.")
+            val sentIntents = ArrayList<PendingIntent>()
+            val deliveryIntents = ArrayList<PendingIntent>()
+            val piFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+            } else {
+                PendingIntent.FLAG_UPDATE_CURRENT
+            }
+            for (idx in parts.indices) {
+                val reqCode = ((msgId % 100000).toInt() * 10) + idx
+                val sIntent = Intent("com.bridge.itell.SMS_SENT_STATUS").apply {
+                    setPackage(packageName)
+                    putExtra("msgId", msgId)
+                    putExtra("phone", phone)
+                }
+                val dIntent = Intent("com.bridge.itell.SMS_DELIVERED_STATUS").apply {
+                    setPackage(packageName)
+                    putExtra("msgId", msgId)
+                    putExtra("phone", phone)
+                }
+                sentIntents.add(PendingIntent.getBroadcast(this, reqCode, sIntent, piFlags))
+                deliveryIntents.add(PendingIntent.getBroadcast(this, reqCode + 500000, dIntent, piFlags))
+            }
+            smsManager.sendMultipartTextMessage(phone, null, parts, sentIntents, deliveryIntents)
+            onHostLog?.invoke("پیامک به $phone در حال ارسال (با گزارش دلیوری)...")
             val res = JSONObject().apply {
                 put("type", "SMS_SENT_OK")
                 put("to", phone)
                 put("body", message)
-                put("timestamp", System.currentTimeMillis())
+                put("timestamp", msgId)
+                put("msgId", msgId)
             }
             sendEncryptedToClients(res.toString())
         } catch (e: Exception) {
@@ -832,7 +922,7 @@ class HostBridgeService : Service() {
             Notification.Builder(this)
         }
         val notification = builder
-            .setContentTitle("Samen Pro v4.8 (میزبان فعال)")
+            .setContentTitle("Samen Pro v5.1 (میزبان فعال)")
             .setContentText("IP: ${getLocalIpAddress()} | پورت 8888 | پروکسی 8080")
             .setSmallIcon(android.R.drawable.stat_sys_phone_call)
             .build()
@@ -848,6 +938,7 @@ class HostBridgeService : Service() {
         callAudioRouter?.stopCallBridge()
         try { dynamicSmsReceiver?.let { unregisterReceiver(it) } } catch (_: Exception) {}
         try { dynamicCallReceiver?.let { unregisterReceiver(it) } } catch (_: Exception) {}
+        try { smsStatusReceiver?.let { unregisterReceiver(it) } } catch (_: Exception) {}
         try { smsObserver?.let { contentResolver.unregisterContentObserver(it) } } catch (_: Exception) {}
         try { if (wakeLock?.isHeld == true) wakeLock?.release() } catch (_: Exception) {}
         try { if (wifiLock?.isHeld == true) wifiLock?.release() } catch (_: Exception) {}

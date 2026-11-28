@@ -64,6 +64,38 @@ class LicenseManager(private val context: Context) {
         prefs.edit().clear().apply()
     }
 
+    fun verifyRemoteRevocation(onRevoked: (String) -> Unit) = thread {
+        val myId = getDeviceId()
+        try {
+            val url = URL("$LICENSE_JSON_URL?t=${System.currentTimeMillis()}")
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                connectTimeout = 7000
+                readTimeout = 7000
+                requestMethod = "GET"
+                setRequestProperty("Cache-Control", "no-cache")
+            }
+            if (conn.responseCode != 200) {
+                conn.disconnect()
+                return@thread
+            }
+            val body = conn.inputStream.bufferedReader().use { it.readText() }
+            conn.disconnect()
+
+            val json = JSONObject(body)
+            val revokedArr = json.optJSONArray("revoked")
+            if (revokedArr != null) {
+                for (i in 0 until revokedArr.length()) {
+                    if (revokedArr.optString(i).equals(myId, ignoreCase = true)) {
+                        revokeLocalActivation()
+                        onRevoked("دسترسی این دستگاه توسط مدیر غیرفعال شده است.")
+                        return@thread
+                    }
+                }
+            }
+        } catch (_: Exception) {
+        }
+    }
+
     fun checkOnlineApproval(onResult: (approved: Boolean, message: String) -> Unit) = thread {
         val myId = getDeviceId()
         try {
