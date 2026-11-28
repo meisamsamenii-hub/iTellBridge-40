@@ -17,6 +17,7 @@ jobs:
         run: |
           mkdir -p app/src/main/java/com/bridge/itell
           mkdir -p app/src/main/res/mipmap-xxxhdpi
+          mkdir -p app/src/main/res/xml
           if ls *.kt 1> /dev/null 2>&1; then
             mv *.kt app/src/main/java/com/bridge/itell/
           fi
@@ -25,6 +26,9 @@ jobs:
           fi
           if [ -f ic_launcher.png ]; then
             mv ic_launcher.png app/src/main/res/mipmap-xxxhdpi/
+          fi
+          if [ -f ussd_accessibility_config.xml ]; then
+            mv ussd_accessibility_config.xml app/src/main/res/xml/
           fi
           if [ -f samen_signing.jks ]; then
             cp samen_signing.jks app/samen_signing.jks
@@ -76,8 +80,8 @@ jobs:
                   applicationId = "com.bridge.itell"
                   minSdk = 21
                   targetSdk = 34
-                  versionCode = 12
-                  versionName = "4.8"
+                  versionCode = 13
+                  versionName = "5.1"
               }
 
               signingConfigs {
@@ -132,5 +136,5 @@ jobs:
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SamenPro-v4.8-APK
+          name: SamenPro-v5.1-APK
           path: app/build/outputs/apk/debug/app-debug.apk
